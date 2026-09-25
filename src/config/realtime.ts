@@ -1,4 +1,5 @@
 import type { JarvisConfig, RealtimeReasoningEffort, RealtimeVoiceConfig } from './types.ts';
+import { isOfflineMode } from './offline.ts';
 import type { RealtimeEnablement } from '../daemon/usejarvis-ai.ts';
 import { IMPACT_MAP, type ActionCategory } from '../roles/authority.ts';
 
@@ -160,6 +161,12 @@ export function resolveRealtimeVoice(
 
   if (enablement === 'off') {
     return { ok: false, reason: 'Realtime voice disabled (voice.realtime.enabled is false)' };
+  }
+
+  // Fork: gpt-realtime-2 is an OpenAI (or hosted-proxy) websocket; never
+  // dialled in offline mode, whatever enablement the caller resolved.
+  if (isOfflineMode()) {
+    return { ok: false, reason: 'Realtime voice disabled (JARVIS_OFFLINE is set)' };
   }
 
   // On a HOSTED install the plan serves realtime, whoever asked for it.

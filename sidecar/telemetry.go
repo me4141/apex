@@ -26,12 +26,14 @@ import (
 	"time"
 )
 
-// Collector endpoint. PUBLIC by design: the Supabase anon key is scoped by an
-// INSERT-only RLS policy on sidecar_pings (it can write pings, never read).
-// Vars (not consts) so tests can point sendTelemetryPing at a local server.
+// Collector endpoint. Fork change: upstream hard-coded its Supabase collector
+// URL + anon key here; both are removed so this build cannot reach it. A
+// collector of your own can be supplied via JARVIS_SIDECAR_TELEMETRY_URL +
+// JARVIS_SIDECAR_TELEMETRY_KEY. Vars (not consts) so tests can point
+// sendTelemetryPing at a local server.
 var (
-	telemetryURL     = "https://wmrxnfhghycxyabdhczn.supabase.co/rest/v1/sidecar_pings"
-	telemetryAnonKey = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6IndtcnhuZmhnaHljeHlhYmRoY3puIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODA5OTQ4OTgsImV4cCI6MjA5NjU3MDg5OH0.phREIq3UEKPUyTNT077q-LWBqCw16wajIoTC50Z0J0E"
+	telemetryURL     = strings.TrimSpace(os.Getenv("JARVIS_SIDECAR_TELEMETRY_URL"))
+	telemetryAnonKey = strings.TrimSpace(os.Getenv("JARVIS_SIDECAR_TELEMETRY_KEY"))
 )
 
 const (
@@ -206,6 +208,16 @@ func StartTelemetry(ctx context.Context, c *SidecarClient) {
 	// A hard env opt-out skips the loop entirely. A config-only opt-out still
 	// starts an inert loop (fire() gates on enabled()) so the Settings > Privacy
 	// checkbox takes effect live in BOTH directions without a restart.
+	// Fork: no built-in collector, and JARVIS_OFFLINE / DO_NOT_TRACK are
+	// honored here too (upstream deliberately ignored them in the sidecar).
+	if telemetryURL == "" || telemetryAnonKey == "" {
+		log.Printf("[telemetry] sidecar telemetry disabled: no collector configured")
+		return
+	}
+	if !isFalsy(os.Getenv("JARVIS_OFFLINE")) || !isFalsy(os.Getenv("DO_NOT_TRACK")) {
+		log.Printf("[telemetry] sidecar telemetry disabled via JARVIS_OFFLINE / DO_NOT_TRACK")
+		return
+	}
 	if envVal := strings.TrimSpace(os.Getenv("JARVIS_SIDECAR_TELEMETRY")); envVal != "" && isFalsy(envVal) {
 		log.Printf("[telemetry] sidecar telemetry disabled via JARVIS_SIDECAR_TELEMETRY")
 		return

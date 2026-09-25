@@ -176,7 +176,7 @@ export type TTSConfig = {
    * the hosted credentials ride the factory's separate `hosted` argument
    * (never this persisted section).
    */
-  provider?: 'edge' | 'elevenlabs' | 'sarvam' | 'usejarvis';
+  provider?: 'edge' | 'elevenlabs' | 'sarvam' | 'usejarvis' | 'local';
   voice?: string;       // e.g. 'en-US-AriaNeural' (edge)
   rate?: string;        // e.g. '+0%', '+10%' (edge)
   volume?: string;      // e.g. '+0%' (edge)
@@ -193,7 +193,11 @@ export type TTSConfig = {
     language?: string;
     speaker?: string;
     sampling_rate?: number;
-  };
+  };  /**
+   * Fork: local OpenAI-compatible speech server (Kokoro-FastAPI, Speaches,
+   * openedai-speech...). Set via JARVIS_TTS_* env vars.
+   */
+  local?: { base_url?: string; model?: string; voice?: string; api_key?: string };
 };
 
 export type DesktopConfig = {
@@ -753,7 +757,8 @@ export const DEFAULT_CONFIG: JarvisConfig = {
     name: '',
   },
   telemetry: {
-    enabled: true,
+    // Fork change: opt-in (upstream default: true).
+    enabled: false,
   },
   daemon: {
     port: 3142,

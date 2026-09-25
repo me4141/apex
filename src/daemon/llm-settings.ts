@@ -31,10 +31,12 @@ import type { LLMManager } from '../llm/manager.ts';
 import type { LLMProvider } from '../llm/provider.ts';
 import {
   instantiateProvider,
+  offlineProviderRefusal,
   atomicReloadProviders,
   configureLLMTiers,
 } from '../llm/config-binding.ts';
 import { hostedRestrictionLookup } from './hosted-usage.ts';
+import { applyEnvLlm, ENV_PROVIDER_NAME, hasEnvLlm } from './env-llm.ts';
 import { isAnthropicCustomBaseUrl } from '../llm/anthropic.ts';
 import { GROQ_DEPRECATED_MODEL_REPLACEMENTS } from '../llm/groq-models.ts';
 import { NVIDIA_RETIRED_MODEL_REPLACEMENTS } from '../llm/nvidia-models.ts';
@@ -325,6 +327,11 @@ export function saveLLMSettings(
           `Provider '${USEJARVIS_PROVIDER_NAME}' is managed by your hosting plan and cannot be edited or deleted`,
         );
       }
+      if (name === ENV_PROVIDER_NAME && hasEnvLlm()) {
+        throw new Error(
+          `Provider '${ENV_PROVIDER_NAME}' is configured by JARVIS_LLM_* environment variables and cannot be edited here`,
+        );
+      }
       if (update === null) continue;
       const existing = config.llm.providers[name] ?? {};
       const nextBaseUrl = normalizeBaseUrl(update.base_url);
@@ -432,14 +439,30 @@ export function saveLLMSettings(
   // provider entry before serializing - the in-memory entries carry secrets
   // injected from the keychain (see mergeLLMSettingsIntoConfig), and the
   // settings table is plaintext.
-  setSetting(SETTING_PROVIDERS, JSON.stringify(
-    stripSecretsFromProviders(config.llm.providers, { hosted: hasUsejarvisAi(config) }),
-  ));
-  setSetting(SETTING_DEFAULT, config.llm.default ?? '');
-  setSetting(SETTING_TIER_CONVERSATION, config.llm.tiers.conversation ?? '');
-  setSetting(SETTING_TIER_HIGH, config.llm.tiers.high ?? '');
-  setSetting(SETTING_TIER_MEDIUM, config.llm.tiers.medium ?? '');
-  setSetting(SETTING_TIER_LOW, config.llm.tiers.low ?? '');
+  // Fork: the env provider and refs pointing at it are injected on every
+  // merge and never persisted; the DB keeps the dashboard's own value so
+  // unsetting JARVIS_LLM_* restores it.
+  const envActive = hasEnvLlm();
+  const persistedProviders = stripSecretsFromProviders(config.llm.providers, { hosted: hasUsejarvisAi(config) });
+  if (envActive) {
+    // A pre-existing dashboard row named `env` was hidden by the merge, not
+    // deleted: carry the stored copy forward untouched.
+    delete persistedProviders[ENV_PROVIDER_NAME];
+    try {
+      const stored = JSON.parse(getSetting(SETTING_PROVIDERS) ?? '{}') as Record<string, LLMProviderEntry>;
+      if (stored[ENV_PROVIDER_NAME]) persistedProviders[ENV_PROVIDER_NAME] = stored[ENV_PROVIDER_NAME];
+    } catch { /* unreadable row: nothing to carry */ }
+  }
+  const persistRef = (key: string, ref: string | undefined) => {
+    if (envActive && parseModelRef(ref)?.provider === ENV_PROVIDER_NAME) return;
+    setSetting(key, ref ?? '');
+  };
+  setSetting(SETTING_PROVIDERS, JSON.stringify(persistedProviders));
+  persistRef(SETTING_DEFAULT, config.llm.default);
+  persistRef(SETTING_TIER_CONVERSATION, config.llm.tiers.conversation);
+  persistRef(SETTING_TIER_HIGH, config.llm.tiers.high);
+  persistRef(SETTING_TIER_MEDIUM, config.llm.tiers.medium);
+  persistRef(SETTING_TIER_LOW, config.llm.tiers.low);
 
   if (body.prompt_cache !== undefined) {
     config.llm.prompt_cache = body.prompt_cache;
@@ -512,6 +535,7 @@ export function mergeLLMSettingsIntoConfig(
         // loads (applyUsejarvisAi would overwrite it anyway; skipping keeps
         // the invariant visible). Self-hosted legacy rows load normally.
         if (name === USEJARVIS_PROVIDER_NAME && hasUsejarvisAi(config)) continue;
+        if (name === ENV_PROVIDER_NAME && hasEnvLlm()) continue;
         config.llm.providers[name] = entry;
       }
     } catch (err) {
@@ -544,6 +568,9 @@ export function mergeLLMSettingsIntoConfig(
   // and PERSISTED its deletion — a hosted user's explicit tier/default choices
   // were erased on every boot.
   applyUsejarvisAi(config);
+  // Fork: .env-configured local LLM (daemon/env-llm.ts). Same placement rule
+  // as the hosted block: before the prune, so env refs are never dangling.
+  applyEnvLlm(config);
 
   // 3. Legacy shape: migrate per-provider DB keys + KEY_* secrets if any
   // are present and no new-shape providers exist for them. This is the
@@ -568,6 +595,7 @@ export function mergeLLMSettingsIntoConfig(
     // a keychain entry squatting on the reserved name must not shadow it.
     // Self-hosted legacy providers hydrate from the keychain like any other.
     if (name === USEJARVIS_PROVIDER_NAME && hasUsejarvisAi(config)) continue;
+    if (name === ENV_PROVIDER_NAME && hasEnvLlm()) continue;
     const key = getSecret(keychainKey(name));
     if (key) {
       // Inject into the entry transiently so registerLLMProviders can
@@ -930,6 +958,10 @@ export async function testLLMProvider(
     ...(authHeader ? { auth_header: authHeader } : {}),
   };
 
+  const offlineRefusal = offlineProviderRefusal(kind, entry);
+  if (offlineRefusal) {
+    return { ok: false, error: `Blocked by JARVIS_OFFLINE: ${offlineRefusal}` };
+  }
   const instance = instantiateProvider(name, entry);
   if (!instance) {
     return { ok: false, error: 'Missing credentials (api_key or base_url) for this provider kind' };

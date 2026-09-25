@@ -1,6 +1,7 @@
 import type { JarvisConfig } from '../config/types.ts';
 import { INSTANCE_SIGNATURE_HEADER, signWithSecret } from '../integrations/google-signature.ts';
 import { redactSecrets } from '../util/redact.ts';
+import { isOfflineMode } from '../config/offline.ts';
 import type { HostedRestriction } from '../util/hosted-error.ts';
 
 /**
@@ -62,6 +63,7 @@ export interface HostedUsageConfig {
 export function readHostedUsageConfig(config: JarvisConfig): HostedUsageConfig | null {
   const block = config.usejarvis_ai;
   if (!block) return null;
+  if (isOfflineMode()) return null;
   const url = typeof block.usage_url === 'string' ? block.usage_url.trim() : '';
   const instanceId = typeof block.instance_id === 'string' ? block.instance_id.trim() : '';
   const secret = typeof block.usage_secret === 'string' ? block.usage_secret.trim() : '';

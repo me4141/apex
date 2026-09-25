@@ -1,0 +1,27 @@
+# Mounted at /etc/jarvis/config.yaml and copied to /data/.jarvis/config.yaml
+# (~/.jarvis for the container user) at start by docker-compose.offline.yml.
+# SYSTEM config only (user settings live in the DB); see config.example.yaml.
+daemon:
+  port: 3142
+  data_dir: "/data"
+  db_path: "/data/jarvis.db"
+
+telemetry:
+  enabled: false
+
+# No sidecar in this stack, so the dashboard must be reachable without an
+# enrolled device. SAFE ONLY because the compose file publishes the port on
+# 127.0.0.1: anyone who can reach the port gets full control. If you add a
+# sidecar or expose this on a LAN, remove this and use `jarvis enroll`.
+auth:
+  insecure_open_access: true
+
+# No display in the container: never launch a local Chromium.
+browser:
+  local: false
+
+# Prebuilt at image build time (see Dockerfile) so first boot needs no npm.
+workflows:
+  engine_dir: /opt/jarvis-runtime/engine
+  pieces_dir: /opt/jarvis-runtime/pieces
+  piece_metadata_cache: /opt/jarvis-runtime/piece-metadata.json

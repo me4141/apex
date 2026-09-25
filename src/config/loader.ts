@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { homedir } from 'node:os';
 import type { JarvisConfig } from './types.ts';
 import { DEFAULT_CONFIG, USER_OWNED_SECTIONS, WORKFLOW_SYSTEM_KEYS } from './types.ts';
+import { isOfflineMode } from './offline.ts';
 
 function expandTilde(filepath: string): string {
   // YAML happily produces a boolean, a number or null for a key that LOOKS
@@ -122,6 +123,24 @@ export function applyEnvOverrides(config: JarvisConfig): void {
     config.voice.realtime.enabled = v !== '' && v !== '0' && v !== 'false' && v !== 'no';
   }
 
+  applyVoiceEnvOverrides(config, env);
+  applyOfflineOverrides(config, env);
+
+  // Fork: the first-run gate exists because a fresh install has no LLM
+  // (ws-service isSetupMode). JARVIS_LLM_BASE_URL + JARVIS_LLM_MODEL already
+  // provide one (daemon/env-llm.ts), so a headless install must not need the
+  // browser wizard to start chatting. In-memory only, never persisted:
+  // removing the env vars brings the wizard back.
+  // Same validity rule as readEnvLlm: a URL it would ignore must not clear the gate.
+  const envLlmUrl = env.JARVIS_LLM_BASE_URL?.trim() ?? '';
+  if (/^https?:\/\//i.test(envLlmUrl) && env.JARVIS_LLM_MODEL?.trim() && !config.onboarding?.setup_completed_at) {
+    config.onboarding = {
+      ...config.onboarding,
+      tutorial_completed_at: config.onboarding?.tutorial_completed_at ?? null,
+      setup_completed_at: Date.now(),
+    };
+  }
+
   // Tool relevance filtering (docs/tool-relevance-filtering.md). The kill
   // switch: `off` wins over the config file, which is what an operator
   // reaches for when the filter misbehaves. Applied here so it survives the
@@ -143,6 +162,76 @@ export function applyEnvOverrides(config: JarvisConfig): void {
       console.warn(`[Config] Invalid JARVIS_TOOL_FILTER="${env.JARVIS_TOOL_FILTER}" - must be on|off; ignoring.`);
     }
   }
+}
+
+/**
+ * Fork: local STT/TTS from env, so a headless/offline install needs no
+ * dashboard visit for voice either.
+ *
+ *   JARVIS_STT_PROVIDER=local
+ *   JARVIS_STT_URL=http://localhost:8000/v1        (Speaches / faster-whisper-server)
+ *   JARVIS_STT_SERVER_TYPE=openai_compatible       (or whisper_cpp)
+ *   JARVIS_STT_MODEL=Systran/faster-whisper-small
+ *   JARVIS_STT_LANGUAGE=tr
+ *
+ *   JARVIS_TTS_PROVIDER=local                       (or `none` to switch speech off)
+ *   JARVIS_TTS_URL=http://localhost:8880/v1        (Kokoro-FastAPI / Speaches)
+ *   JARVIS_TTS_MODEL=kokoro
+ *   JARVIS_TTS_VOICE=af_heart
+ */
+function applyVoiceEnvOverrides(config: JarvisConfig, env: NodeJS.ProcessEnv): void {
+  const sttProvider = env.JARVIS_STT_PROVIDER?.trim();
+  if (sttProvider) {
+    if (sttProvider === 'local') {
+      const serverType = env.JARVIS_STT_SERVER_TYPE?.trim();
+      config.stt = {
+        ...config.stt,
+        provider: 'local',
+        local: {
+          ...config.stt?.local,
+          endpoint: env.JARVIS_STT_URL?.trim() || config.stt?.local?.endpoint || 'http://localhost:8080',
+          ...(env.JARVIS_STT_MODEL?.trim() ? { model: env.JARVIS_STT_MODEL.trim() } : {}),
+          ...(serverType === 'whisper_cpp' || serverType === 'openai_compatible' ? { server_type: serverType } : {}),
+        },
+        ...(env.JARVIS_STT_LANGUAGE?.trim() ? { language: env.JARVIS_STT_LANGUAGE.trim() } : {}),
+      };
+    } else {
+      console.warn(`[Config] Invalid JARVIS_STT_PROVIDER="${sttProvider}" - only 'local' is supported; ignoring.`);
+    }
+  }
+
+  const ttsProvider = env.JARVIS_TTS_PROVIDER?.trim();
+  if (ttsProvider === 'none') {
+    config.tts = { ...config.tts, enabled: false };
+  } else if (ttsProvider === 'local') {
+    config.tts = {
+      ...config.tts,
+      enabled: true,
+      provider: 'local',
+      local: {
+        ...config.tts?.local,
+        ...(env.JARVIS_TTS_URL?.trim() ? { base_url: env.JARVIS_TTS_URL.trim() } : {}),
+        ...(env.JARVIS_TTS_MODEL?.trim() ? { model: env.JARVIS_TTS_MODEL.trim() } : {}),
+        ...(env.JARVIS_TTS_VOICE?.trim() ? { voice: env.JARVIS_TTS_VOICE.trim() } : {}),
+      },
+    };
+  } else if (ttsProvider) {
+    console.warn(`[Config] Invalid JARVIS_TTS_PROVIDER="${ttsProvider}" - must be local|none; ignoring.`);
+  }
+}
+
+/**
+ * Fork: JARVIS_OFFLINE forces off the two browser/voice paths that leave the
+ * machine by design - `webspeech` wake detection (Chromium streams mic audio
+ * to Google) and gpt-realtime-2 (OpenAI websocket). openwakeword runs fully
+ * in-browser from bundled ONNX models.
+ */
+function applyOfflineOverrides(config: JarvisConfig, env: NodeJS.ProcessEnv): void {
+  if (!isOfflineMode(env)) return;
+  if (!config.voice) config.voice = { wake_engine: 'openwakeword' };
+  config.voice.wake_engine = 'openwakeword';
+  if (config.voice.realtime) config.voice.realtime.enabled = false;
+  if (config.telemetry) config.telemetry.enabled = false;
 }
 
 export async function loadConfig(configPath?: string): Promise<JarvisConfig> {

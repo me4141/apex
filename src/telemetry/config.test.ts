@@ -6,9 +6,15 @@ const OFF = { telemetry: { enabled: false } };
 const UNSET = {};
 
 describe('resolveTelemetryEnabled', () => {
-  test('enabled by default when nothing is set', () => {
-    expect(resolveTelemetryEnabled(UNSET, {}).enabled).toBe(true);
+  test('disabled by default when nothing is set (fork: opt-in)', () => {
+    expect(resolveTelemetryEnabled(UNSET, {}).enabled).toBe(false);
     expect(resolveTelemetryEnabled(ON, {}).enabled).toBe(true);
+  });
+
+  test('JARVIS_OFFLINE beats every opt-in', () => {
+    const d = resolveTelemetryEnabled(ON, { JARVIS_OFFLINE: '1', JARVIS_TELEMETRY: '1' });
+    expect(d.enabled).toBe(false);
+    expect(d.reason).toContain('JARVIS_OFFLINE');
   });
 
   test('config flag false disables', () => {

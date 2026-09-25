@@ -1,3 +1,9 @@
+> [!IMPORTANT]
+> **Modified version.** This repository is a modified fork of
+> [vierisid/jarvis](https://github.com/vierisid/jarvis) v0.14.0, configured for
+> fully self-hosted / offline use. See [MODIFICATIONS.md](MODIFICATIONS.md) and
+> [docs/OFFLINE.md](docs/OFFLINE.md). Licensed under the unchanged [LICENSE](LICENSE).
+
 <div align="center">
 
 # JARVIS

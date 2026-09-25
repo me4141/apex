@@ -29,6 +29,14 @@
 import { afterAll } from "bun:test";
 import { assertNoLeakedEngines } from "./workflows/runner/engine-runtime/spawn";
 
+// Fork: `bun test` auto-loads `.env`, and the offline setup (docs/OFFLINE.md)
+// puts JARVIS_OFFLINE / JARVIS_LLM_* / JARVIS_STT_* / JARVIS_TTS_* there. They
+// would silently change behaviour under every test that did not ask for it.
+// Tests that exercise them set them explicitly.
+for (const key of Object.keys(process.env)) {
+  if (/^JARVIS_(OFFLINE|LLM_|STT_|TTS_|TELEMETRY_URL|TELEMETRY_KEY)/.test(key)) delete process.env[key];
+}
+
 afterAll(async () => {
   await assertNoLeakedEngines();
 });

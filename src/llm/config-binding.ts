@@ -29,6 +29,30 @@ import { OpenAICompatibleProvider } from './openai-compatible.ts';
 import { LiteLLMProvider } from './litellm.ts';
 import { OmniRouteProvider } from './omniroute.ts';
 import { UsejarvisAIProvider } from './usejarvis.ts';
+import { isLocalUrl, isOfflineMode, warnOfflineBlocked } from '../config/offline.ts';
+
+/**
+ * Fork: provider kinds whose endpoint is fixed to a vendor cloud (the class
+ * ignores base_url). In offline mode they are never instantiated.
+ */
+const CLOUD_ONLY_KINDS: ReadonlySet<LLMProviderKind> = new Set([
+  'openai', 'groq', 'gemini', 'openrouter', 'nvidia', 'usejarvis_ai',
+]);
+
+/** Where a kind with a configurable endpoint sends traffic when base_url is unset. */
+const IMPLICIT_BASE_URL: Partial<Record<LLMProviderKind, string>> = {
+  omniroute: 'http://localhost:20128/v1',
+};
+
+/** Offline-mode gate: null when allowed, otherwise the reason it is refused. */
+export function offlineProviderRefusal(kind: LLMProviderKind, entry: LLMProviderEntry): string | null {
+  if (!isOfflineMode()) return null;
+  if (CLOUD_ONLY_KINDS.has(kind)) return `kind=${kind} only talks to a vendor cloud`;
+  const url = entry.base_url?.trim() || IMPLICIT_BASE_URL[kind];
+  if (!url) return `kind=${kind} has no base_url, and only a local one is allowed`;
+  if (!isLocalUrl(url)) return `base_url ${url} is not a local host`;
+  return null;
+}
 
 /**
  * Instantiate a provider class from a single entry. Returns null when the
@@ -60,6 +84,11 @@ export function instantiateProvider(
   globals?: ProviderGlobals,
 ): LLMProvider | null {
   const kind: LLMProviderKind = (entry.kind ?? name) as LLMProviderKind;
+  const refusal = offlineProviderRefusal(kind, entry);
+  if (refusal) {
+    warnOfflineBlocked(`LLM provider '${name}'`, refusal);
+    return null;
+  }
   let provider: LLMProvider | null = null;
   switch (kind) {
     case 'anthropic':

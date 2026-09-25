@@ -3,7 +3,7 @@ import type { JarvisConfig } from '../config/types.ts';
 import { getSetting, setSetting } from '../vault/settings.ts';
 import { resolveTelemetryEnabled } from './config.ts';
 import { buildPayload, sendPing, type SendOutcome, type TelemetryPayload } from './client.ts';
-import { HEARTBEAT_INTERVAL_MS } from './constants.ts';
+import { HEARTBEAT_INTERVAL_MS, telemetryEndpoint } from './constants.ts';
 
 /** settings-table key marking the first time telemetry ran on this install. */
 const FIRST_SEEN_KEY = 'telemetry.first_seen_at';
@@ -53,6 +53,12 @@ export class TelemetryService implements Service {
       const decision = resolveTelemetryEnabled(this.opts.config);
       if (!decision.enabled) {
         console.log(`[Telemetry] Disabled - ${decision.reason}.`);
+        return;
+      }
+      // Fork: the real sender has no built-in collector. Say so instead of
+      // announcing "telemetry is on" while every ping goes nowhere.
+      if (!this.opts.sender && !telemetryEndpoint()) {
+        console.log('[Telemetry] Disabled - no collector (set JARVIS_TELEMETRY_URL + JARVIS_TELEMETRY_KEY).');
         return;
       }
 

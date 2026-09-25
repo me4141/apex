@@ -1712,6 +1712,8 @@ export function createApiRoutes(ctx: ApiContext): Record<string, unknown> {
     '/api/config/llm/nvidia/models': {
       GET: async () => {
         try {
+          const { isOfflineMode } = await import('../config/offline.ts');
+          if (isOfflineMode()) return json({ ok: false, error: 'NVIDIA is a cloud provider; disabled by JARVIS_OFFLINE', models: [] });
           const { NVIDIAProvider } = await import('../llm/nvidia.ts');
           // Key (if any) lives in the keychain, keyed by provider name. NVIDIA's
           // /v1/models is publicly readable, so an empty key still works.
@@ -1746,6 +1748,10 @@ export function createApiRoutes(ctx: ApiContext): Record<string, unknown> {
           const configured = Object.values(ctx.config.llm.providers ?? {})
             .find((e) => e?.kind === 'ollama')?.base_url;
           const baseUrl = typed || configured || 'http://localhost:11434';
+          const { isOfflineMode, isLocalUrl } = await import('../config/offline.ts');
+          if (isOfflineMode() && !isLocalUrl(baseUrl)) {
+            return json({ ok: false, error: `${baseUrl} is not a local host; blocked by JARVIS_OFFLINE`, models: [] });
+          }
           const models = await new OllamaProvider(baseUrl).listModels();
           return json({ ok: true, models });
         } catch (err) {
@@ -1883,6 +1889,10 @@ export function createApiRoutes(ctx: ApiContext): Record<string, unknown> {
             ? null
             : (providerName ? getSecret(`llm.provider.${providerName}.api_key`) : null) || configured?.api_key;
           const apiKey = body.api_key || storedApiKey || '';
+          const { isOfflineMode, isLocalUrl } = await import('../config/offline.ts');
+          if (isOfflineMode() && !isLocalUrl(baseUrl)) {
+            return json({ ok: false, error: `${baseUrl} is not a local host; blocked by JARVIS_OFFLINE`, models: [] });
+          }
           const { OmniRouteProvider } = await import('../llm/omniroute.ts');
           const models = await new OmniRouteProvider(baseUrl, 'auto', apiKey).listModels();
           return json({ ok: true, models });
@@ -1912,6 +1922,8 @@ export function createApiRoutes(ctx: ApiContext): Record<string, unknown> {
             || '';
           if (!apiKey) return json({ ok: false, error: 'Groq API key required', models: [] });
 
+          const { isOfflineMode } = await import('../config/offline.ts');
+          if (isOfflineMode()) return json({ ok: false, error: 'Groq is a cloud provider; disabled by JARVIS_OFFLINE', models: [] });
           const { GroqProvider } = await import('../llm/groq.ts');
           const models = await new GroqProvider(apiKey).listModels();
           return json({ ok: true, models });
