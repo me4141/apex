@@ -3996,7 +3996,11 @@ export async function startDaemon(userConfig?: Partial<DaemonConfig>): Promise<v
         : null;
       if (ttsProvider) {
         wsService.setTTSProvider(ttsProvider);
-        console.log(`[Daemon] TTS enabled: ${ttsBinding?.provider ?? 'edge'} (${jarvisConfig.tts.voice ?? 'en-US-AriaNeural'})`);
+        // Fork: a local provider's voice lives in tts.local, not the Edge-default tts.voice.
+        const ttsVoice = ttsBinding?.provider === 'local'
+          ? `${jarvisConfig.tts.local?.voice ?? 'af_heart'} @ ${jarvisConfig.tts.local?.base_url ?? 'http://localhost:8880/v1'}`
+          : (jarvisConfig.tts.voice ?? 'en-US-AriaNeural');
+        console.log(`[Daemon] TTS enabled: ${ttsBinding?.provider ?? 'edge'} (${ttsVoice})`);
       }
     }
 

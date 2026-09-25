@@ -1,15 +1,27 @@
-# Offline stack: Jarvis + Ollama with NO internet egress at runtime.
+# Offline voice-assistant stack: Jarvis + Ollama (LLM) + Speaches (STT + TTS),
+# with NO internet egress at runtime. Tuned for one 16 GB NVIDIA GPU.
 #
-#   cp .env.example .env               # then set JARVIS_LLM_BASE_URL=http://ollama:11434/v1
-#   docker compose -f docker-compose.offline.yml --profile setup run --rm ollama-pull   # one-time, needs internet
-#   docker compose -f docker-compose.offline.yml up -d --build
-#   open http://127.0.0.1:3142
+#   scripts/offline/setup.sh     # one-time, ONLINE: images, build, models; then starts + tests
+#   scripts/offline/test.sh      # re-run the checks any time (offline)
 #
-# `jarvis` and `ollama` sit only on `isolated`, an internal network with no
-# gateway: even a code path this fork missed has nowhere to go. The dashboard
-# reaches you through `edge`, a TCP relay bound to 127.0.0.1. See docs/OFFLINE.md.
+# `jarvis`, `ollama` and `speaches` sit only on `isolated`, an internal network
+# with no gateway: even a code path this fork missed has nowhere to go. The
+# dashboard reaches you through `edge`, a TCP relay bound to 127.0.0.1.
+# Model/voice CHOICES live in .env; the WIRING between containers lives here.
+# See docs/OFFLINE.md.
 
 name: jarvis-offline
+
+x-gpu: &gpu
+  deploy:
+    resources:
+      reservations:
+        devices: [{ driver: nvidia, count: all, capabilities: [gpu] }]
+
+x-speaches-image: &speaches-image
+  # Newest published CUDA build (CUDA 12.6.3). See the Blackwell note on
+  # WHISPER__COMPUTE_TYPE below.
+  image: ghcr.io/speaches-ai/speaches:${SPEACHES_IMAGE_TAG:-latest-cuda-12.6.3}
 
 services:
   jarvis:
@@ -18,6 +30,10 @@ services:
     environment:
       JARVIS_OFFLINE: "1"
       DO_NOT_TRACK: "1"
+      # Container wiring (wins over the localhost defaults in .env).
+      JARVIS_LLM_BASE_URL: http://ollama:11434/v1
+      JARVIS_STT_URL: http://speaches:8000/v1
+      JARVIS_TTS_URL: http://speaches:8000/v1
     volumes:
       - jarvis-data:/data
       - ./docker/offline/config.yaml:/etc/jarvis/config.yaml:ro
@@ -28,20 +44,65 @@ services:
     command:
       - mkdir -p /data/.jarvis && cp /etc/jarvis/config.yaml /data/.jarvis/config.yaml && exec jarvis start --no-open --data-dir /data --no-local-tools
     networks: [isolated]
-    depends_on: [ollama]
+    depends_on: [ollama, speaches]
     restart: unless-stopped
 
   ollama:
-    image: ollama/ollama:latest
+    image: ollama/ollama:${OLLAMA_IMAGE_TAG:-latest}
+    <<: *gpu
+    environment:
+      # Jarvis's FIRST turn is ~15k tokens (about 50 tool schemas + system
+      # prompt). Ollama's default window is 4096 and the OpenAI-compatible
+      # endpoint Jarvis uses cannot raise it per request, so without this
+      # the prompt is silently truncated. 32768 = Qwen2.5-7B's native max.
+      OLLAMA_CONTEXT_LENGTH: ${OLLAMA_CONTEXT_LENGTH:-32768}
+      # q8_0 halves KV-cache VRAM (~0.9 GB at 32k for Qwen2.5-7B); needs flash attention.
+      OLLAMA_FLASH_ATTENTION: "1"
+      OLLAMA_KV_CACHE_TYPE: q8_0
+      # Keep the model resident: no reload lag on the first word after idle.
+      OLLAMA_KEEP_ALIVE: "-1"
+      # Two slots. Every spoken turn sends two DIFFERENT large prompts (the
+      # voice-intent classifier, ~10k tokens, then the chat turn, ~15k). With
+      # one slot they evict each other's cached prefix and both are fully
+      # re-processed each turn; two slots let each keep its prefix warm.
+      # Each slot has its own KV cache: ~0.9 GB extra at 32k/q8_0.
+      OLLAMA_NUM_PARALLEL: ${OLLAMA_NUM_PARALLEL:-2}
+      OLLAMA_MAX_LOADED_MODELS: "1"
     volumes:
       - ollama-models:/root/.ollama
     networks: [isolated]
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
     restart: unless-stopped
-    # GPU (NVIDIA Container Toolkit): uncomment
-    # deploy:
-    #   resources:
-    #     reservations:
-    #       devices: [{ driver: nvidia, count: all, capabilities: [gpu] }]
+
+  speaches:
+    <<: [*speaches-image, *gpu]
+    environment:
+      WHISPER__INFERENCE_DEVICE: ${WHISPER_DEVICE:-cuda}
+      # RTX 50-series (Blackwell, sm_120): CTranslate2's default int8 path
+      # fails with CUBLAS_STATUS_NOT_SUPPORTED; float16 works. On CPU set
+      # WHISPER_DEVICE=cpu and WHISPER_COMPUTE_TYPE=int8 in .env.
+      WHISPER__COMPUTE_TYPE: ${WHISPER_COMPUTE_TYPE:-float16}
+      # Keep both models loaded once used (default unloads after 300 s idle).
+      STT_MODEL_TTL: "-1"
+      TTS_MODEL_TTL: "-1"
+      # Models come from the volume only; never ask the Hub.
+      HF_HUB_OFFLINE: "1"
+      # The Gradio UI is not needed and can pull web assets.
+      ENABLE_UI: "false"
+      LOG_LEVEL: info
+    volumes:
+      - speaches-models:/home/ubuntu/.cache/huggingface/hub
+    networks: [isolated]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/v1/models', timeout=4)"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+    restart: unless-stopped
 
   # Relay: the only container with a published port. Docker cannot publish a
   # port for a container attached solely to an internal network.
@@ -54,23 +115,68 @@ services:
     depends_on: [jarvis]
     restart: unless-stopped
 
-  # One-time model download (the ONLY step that needs internet). Shares the
-  # model volume with `ollama`. Override the model: OLLAMA_PULL=llama3.1:8b
+  # ── One-time downloads (profile `setup`, the ONLY steps with internet) ──
+
   ollama-pull:
     profiles: [setup]
-    image: ollama/ollama:latest
+    image: ollama/ollama:${OLLAMA_IMAGE_TAG:-latest}
     volumes:
       - ollama-models:/root/.ollama
     networks: [egress]
     environment:
-      OLLAMA_PULL: ${OLLAMA_PULL:-qwen2.5:7b-instruct}
+      OLLAMA_PULL: ${JARVIS_LLM_MODEL:-qwen2.5:7b-instruct}
     entrypoint: ["/bin/sh", "-c"]
     command:
       - |
         ollama serve & pid=$$!
         until ollama list >/dev/null 2>&1; do sleep 1; done
-        ollama pull "$$OLLAMA_PULL"
-        kill $$pid
+        ollama pull "$$OLLAMA_PULL"; rc=$$?
+        kill $$pid; exit $$rc
+
+  # Runs the same Speaches image on the egress network against the same model
+  # volume, downloads through Speaches' own API (so it fetches exactly the
+  # files Speaches expects), then verifies Speaches lists each model as
+  # installed. CPU only: no GPU needed to download.
+  speaches-pull:
+    profiles: [setup]
+    <<: *speaches-image
+    volumes:
+      - speaches-models:/home/ubuntu/.cache/huggingface/hub
+    networks: [egress]
+    environment:
+      WHISPER__INFERENCE_DEVICE: cpu
+      ENABLE_UI: "false"
+      LOG_LEVEL: warning
+      PULL_MODELS: "${JARVIS_STT_MODEL:-mobiuslabsgmbh/faster-whisper-large-v3-turbo} ${JARVIS_TTS_MODEL:-speaches-ai/Kokoro-82M-v1.0-ONNX}"
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        uvicorn --factory speaches.main:create_app >/tmp/speaches.log 2>&1 & pid=$$!
+        python - <<'PY'
+        import os, sys, time, urllib.error, urllib.request
+        base = "http://localhost:8000"
+        for _ in range(120):
+            try:
+                urllib.request.urlopen(base + "/v1/models", timeout=3); break
+            except Exception:
+                time.sleep(1)
+        else:
+            sys.exit("speaches did not start")
+        failed = []
+        for model in os.environ["PULL_MODELS"].split():
+            print(f"downloading {model} ...", flush=True)
+            try:
+                urllib.request.urlopen(urllib.request.Request(f"{base}/v1/models/{model}", method="POST"), timeout=3600)
+            except urllib.error.HTTPError as e:
+                print(f"  download failed: HTTP {e.code} {e.read()[:300]!r}"); failed.append(model); continue
+            try:  # Speaches only lists a repo whose model card it recognises.
+                urllib.request.urlopen(f"{base}/v1/models/{model}", timeout=10)
+                print(f"  installed: {model}")
+            except urllib.error.HTTPError:
+                print(f"  downloaded but NOT recognised by Speaches: {model}"); failed.append(model)
+        sys.exit(1 if failed else 0)
+        PY
+        rc=$$?; kill $$pid; exit $$rc
 
 networks:
   isolated:
@@ -80,3 +186,4 @@ networks:
 volumes:
   jarvis-data:
   ollama-models:
+  speaches-models:

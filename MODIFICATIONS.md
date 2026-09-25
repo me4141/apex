@@ -17,7 +17,7 @@ servers. Details and the network inventory are in [docs/OFFLINE.md](docs/OFFLINE
 | Telemetry (sidecar) | Same: collector removed; honors `JARVIS_OFFLINE` / `DO_NOT_TRACK`. |
 | Offline mode | New `JARVIS_OFFLINE=1`: refuses non-local LLM/STT/TTS/realtime endpoints and ignores hosted `usejarvis_ai` / `usejarvis_billing` blocks. |
 | LLM | New `JARVIS_LLM_*` env vars configure a local OpenAI-compatible provider (Ollama, vLLM, LM Studio, llama.cpp). |
-| Voice | New local TTS provider (OpenAI-compatible `/v1/audio/speech`); `JARVIS_STT_*` / `JARVIS_TTS_*` env vars. |
+| Voice | New local TTS provider (OpenAI-compatible `/v1/audio/speech`); `JARVIS_STT_*` / `JARVIS_TTS_*` env vars; `/api/tts/preview` supports the local provider. |
 | Dashboard | Google Fonts links removed (system font fallback). |
-| Docker | Workflow engine prebuilt at image build; `LICENSE` shipped in the image; `docker-compose.offline.yml` with an internal (no-egress) network. |
+| Docker | Workflow engine prebuilt at image build; `LICENSE` shipped in the image; `docker-compose.offline.yml`: Jarvis + Ollama + Speaches (Whisper STT, Kokoro TTS) on an internal (no-egress) network, with `scripts/offline/setup.sh` / `test.sh`. |
 | CI | All upstream GitHub Actions workflows removed (`.github/workflows`). |
