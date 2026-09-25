@@ -15,24 +15,43 @@ part you can trust even if the code missed something.
 
 ## Quick start: Docker (recommended)
 
+The stack in `docker-compose.offline.yml`, sized for one 16 GB NVIDIA GPU:
+
+| Service | Role | Model |
+| --- | --- | --- |
+| `ollama` | LLM, OpenAI-compatible `/v1` | `qwen2.5:7b-instruct` |
+| `speaches` | STT `/v1/audio/transcriptions` (faster-whisper) | `mobiuslabsgmbh/faster-whisper-large-v3-turbo` |
+| `speaches` | TTS `/v1/audio/speech` (Kokoro) | `speaches-ai/Kokoro-82M-v1.0-ONNX`, voice `af_heart` |
+| `jarvis` | The brain + dashboard | |
+| `edge` | TCP relay, the only published port (`127.0.0.1:3142`) | |
+
+Host prerequisites: Docker with Compose v2, an NVIDIA driver of the R570
+branch or newer (required for RTX 50-series), and the NVIDIA Container
+Toolkit (`nvidia-ctk runtime configure --runtime=docker`).
+
 ```bash
-cp .env.example .env
-# In .env, point the LLM at the compose service instead of localhost:
-#   JARVIS_LLM_BASE_URL=http://ollama:11434/v1
-#   JARVIS_LLM_MODEL=qwen2.5:7b-instruct
-
-# 1. One-time, ONLINE: download the model into the shared volume.
-OLLAMA_PULL=qwen2.5:7b-instruct \
-  docker compose -f docker-compose.offline.yml --profile setup run --rm ollama-pull
-
-# 2. Build the image (ONLINE: pulls base images + npm deps, and prebuilds the
-#    workflow engine so first boot needs no npm).
-docker compose -f docker-compose.offline.yml build
-
-# 3. From here on, no internet needed.
-docker compose -f docker-compose.offline.yml up -d
+scripts/offline/setup.sh   # ONLINE, once: images, build, all three models; then starts + tests
+scripts/offline/test.sh    # OFFLINE, any time: re-run the checks
 open http://127.0.0.1:3142
 ```
+
+`setup.sh` is the only step that needs internet. It creates `.env` from
+`.env.example` if missing, pulls the images, builds Jarvis, downloads the LLM
+(`ollama-pull`) and the STT/TTS models (`speaches-pull`, through Speaches' own
+download API, then checks that Speaches recognises each model), and then
+starts the runtime services on the internal network.
+
+`test.sh` checks, in order:
+
+1. `ollama` and `speaches` are healthy, and the dashboard answers.
+2. `jarvis`, `ollama` and `speaches` each **fail** to open an internet connection.
+3. The LLM answers at the URL Jarvis uses, and `ollama ps` shows the context window.
+4. TTS through Jarvis's own `LocalOpenAITTS` adapter (`/api/tts/preview`),
+   saved to `test-output/tts-preview.mp3`.
+5. The full voice loop over the dashboard WebSocket. A spoken WAV is made
+   locally, Jarvis transcribes it with its `LocalWhisperSTT` adapter, the LLM
+   answers, and Kokoro speaks the reply back.
+6. VRAM in use.
 
 The dashboard opens without a login because `docker/offline/config.yaml` sets
 `auth.insecure_open_access: true`. That is safe **only** because the port is
@@ -41,12 +60,69 @@ Jarvis can run commands. Do not change the binding to `0.0.0.0` without
 removing that flag and enrolling a device (`jarvis enroll`, see
 [SELF_HOSTING.md](SELF_HOSTING.md)).
 
-Verify isolation from inside the container. This should fail:
+### Why these settings (GPU / Blackwell)
+
+- **`OLLAMA_CONTEXT_LENGTH=32768`.** Jarvis's first chat turn is about 61k
+  characters (~15k tokens): 41k of tool schemas plus the system prompt,
+  measured on this fork. Ollama's default window is 4096, and the
+  OpenAI-compatible endpoint Jarvis uses cannot raise it per request. Without
+  this setting the prompt is **silently truncated**. 32768 is Qwen2.5-7B's
+  native maximum.
+- **`OLLAMA_NUM_PARALLEL=2`.** Each spoken turn sends two different large
+  prompts: the voice-intent classifier (~42k characters) and then the chat
+  turn. With one slot they evict each other's cached prefix. This setting is
+  reasoned, not benchmarked. Set it to 1 to save ~0.9 GB if latency is fine.
+- **`OLLAMA_KV_CACHE_TYPE=q8_0` + flash attention.** Halves KV-cache VRAM.
+- **`WHISPER__COMPUTE_TYPE=float16`.** On RTX 50-series (sm_120),
+  CTranslate2's default int8 path fails with `CUBLAS_STATUS_NOT_SUPPORTED`,
+  and float16 works. The newest Speaches CUDA image is built on CUDA 12.6.3,
+  which predates Blackwell. If STT still fails on the GPU, set
+  `WHISPER_DEVICE=cpu` and `WHISPER_COMPUTE_TYPE=int8` in `.env`. Turbo on
+  CPU is slower but works.
+- **`*_MODEL_TTL=-1`, `OLLAMA_KEEP_ALIVE=-1`.** Models stay loaded, so there
+  is no reload pause on the first word after idle.
+
+Rough VRAM budget. These are **estimates** from model sizes, not
+measurements; `test.sh` step 6 prints the real number.
+
+| Component | Approx. VRAM |
+| --- | --- |
+| Qwen2.5-7B Q4_K_M weights | ~4.7 GB |
+| KV cache, 32k × 2 slots, q8_0 | ~1.9 GB |
+| Ollama compute buffers | ~0.5–1 GB |
+| Whisper large-v3-turbo, float16 | ~1.6–2.5 GB |
+| Kokoro-82M (ONNX) | < 0.5 GB |
+| **Total** | **~9–10.5 GB of 16 GB** |
+
+### Language: Kokoro has no Turkish voice
+
+Kokoro v1.0 speaks English, Spanish, French, Hindi, Italian, Japanese,
+Brazilian Portuguese and Mandarin. If you talk to Jarvis in Turkish, Whisper
+will transcribe it fine and Qwen will answer in Turkish, but Kokoro will read
+that answer with English pronunciation. For Turkish speech, pick a TTS model
+with a `tr_TR` voice. Speaches also runs Piper, which has Turkish voices. To
+list what Speaches can install, start a throwaway online instance and query its
+registry:
 
 ```bash
-docker compose -f docker-compose.offline.yml exec jarvis \
-  bun -e "await fetch('https://example.com')"
+docker run --rm -d --name speaches-registry -p 127.0.0.1:8001:8000 ghcr.io/speaches-ai/speaches:latest-cpu
+curl -s 'http://127.0.0.1:8001/v1/registry?task=text-to-speech' | grep -o '"id":"[^"]*tr_TR[^"]*"'
+docker stop speaches-registry
 ```
+
+Then set `JARVIS_TTS_MODEL` / `JARVIS_TTS_VOICE` in `.env` and re-run
+`setup.sh`. Nothing else changes, because Jarvis only sees the OpenAI-style
+`/v1/audio/speech` endpoint.
+
+### Troubleshooting
+
+| Symptom | Check |
+| --- | --- |
+| `speaches-pull`: "downloaded but NOT recognised" for the Whisper model | Set `JARVIS_STT_MODEL=deepdml/faster-whisper-large-v3-turbo-ct2` and re-run `setup.sh`. Speaches only lists repos whose model card says `library_name: ctranslate2`. |
+| STT fails, `CUBLAS_STATUS_NOT_SUPPORTED` in `logs speaches` | Keep `WHISPER_COMPUTE_TYPE=float16`; else fall back to CPU (above). |
+| `ollama ps` shows `PROCESSOR` partly CPU | VRAM ran out: lower `OLLAMA_CONTEXT_LENGTH` (not below 16384) or `OLLAMA_NUM_PARALLEL=1`. |
+| Replies ignore tools or the persona | Context truncated: check `CONTEXT` in `ollama ps`. |
+| `could not select device driver "nvidia"` | NVIDIA Container Toolkit not installed / Docker not restarted. |
 
 ## Quick start: bare metal
 
@@ -195,7 +271,13 @@ internal network stops all of them.
   prebuilt workflow runtime, the tripwire logged **zero** outbound attempts
   across boot, the chat, and idle background work. Without it, it logged
   the npm `bun install`, which is how that dependency was found.
-- Not verified here: the Docker stack itself (no Docker daemon was available;
-  the compose file was validated with `docker compose config`), and the Go
-  sidecar build (needs GTK/WebKit headers; the change was type-checked in
-  isolation).
+- Voice loop (bare metal): the daemon ran with a fake Speaches (fixed
+  transcript, placeholder audio) and the fake LLM. The exact JavaScript from
+  `scripts/offline/test.sh` steps 3 and 5 passed against it: WAV into Jarvis's
+  `LocalWhisperSTT`, then the LLM, then `LocalOpenAITTS`, with audio returned
+  over the WebSocket. `/api/tts/preview` (step 4) returned the local server's
+  audio.
+- Not verified here: the Docker stack itself and real model quality or
+  latency (no Docker daemon or GPU was available; the compose file was
+  validated with `docker compose config`), and the Go sidecar build (needs
+  GTK/WebKit headers; the change was type-checked in isolation).

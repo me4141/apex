@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { createSTTProvider, createTTSProvider, LocalOpenAITTS, LocalWhisperSTT } from './voice.ts';
+import { createApiRoutes, type ApiContext } from '../daemon/api-routes.ts';
+import { DEFAULT_CONFIG } from '../config/types.ts';
 
 const prev = process.env.JARVIS_OFFLINE;
 afterEach(() => {
@@ -63,6 +65,41 @@ describe('LocalOpenAITTS', () => {
     try {
       const tts = new LocalOpenAITTS(`http://127.0.0.1:${server.port}/v1`);
       await expect(tts.synthesize('x')).rejects.toThrow(/Local TTS error \(400\): no such voice/);
+    } finally {
+      server.stop(true);
+    }
+  });
+});
+
+describe('/api/tts/preview with local TTS', () => {
+  test('offline: previews through the configured local server instead of Edge', async () => {
+    process.env.JARVIS_OFFLINE = '1';
+    let seenVoice = '';
+    const server = Bun.serve({
+      port: 0,
+      hostname: '127.0.0.1',
+      async fetch(req) {
+        seenVoice = ((await req.json()) as { voice: string }).voice;
+        return new Response(new Uint8Array([0xff, 0xfb]), { headers: { 'content-type': 'audio/mpeg' } });
+      },
+    });
+    try {
+      const config = structuredClone(DEFAULT_CONFIG);
+      config.tts = { enabled: true, provider: 'local', local: { base_url: `http://127.0.0.1:${server.port}/v1`, voice: 'af_heart' } };
+      const route = createApiRoutes({ config } as unknown as ApiContext)['/api/tts/preview'] as {
+        POST: (req: Request) => Promise<Response>;
+      };
+      const post = (body: object) => route.POST(new Request('http://x/api/tts/preview', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+      }));
+
+      const res = await post({ text: 'Hello.' });
+      expect(res.status).toBe(200);
+      expect(res.headers.get('content-type')).toBe('audio/mpeg');
+      expect(seenVoice).toBe('af_heart');
+
+      await post({ provider: 'local', voice: 'bf_emma' });
+      expect(seenVoice).toBe('bf_emma');
     } finally {
       server.stop(true);
     }

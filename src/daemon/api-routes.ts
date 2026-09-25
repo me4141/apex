@@ -3038,6 +3038,20 @@ export function createApiRoutes(ctx: ApiContext): Record<string, unknown> {
             provider?: string; voice?: string; api_key?: string; voice_id?: string; model?: string; text?: string;
           };
           const text = (typeof body.text === 'string' && body.text.trim() ? body.text.trim() : "Hi, I'm Jarvis. This is how I'll sound.").slice(0, 280);
+          // Fork: preview the configured local speech server (JARVIS_TTS_* /
+          // tts.local). Without this, an unspecified provider fell through to
+          // Edge, which offline mode refuses.
+          if (body.provider === 'local' || (body.provider === undefined && ctx.config.tts?.provider === 'local')) {
+            const local = {
+              ...ctx.config.tts?.local,
+              ...(typeof body.voice === 'string' && body.voice ? { voice: body.voice } : {}),
+            };
+            const { createTTSProvider } = await import('../comms/voice.ts');
+            const provider = createTTSProvider({ enabled: true, provider: 'local', local });
+            if (!provider) return error('Could not build the local TTS provider (check JARVIS_TTS_URL; offline mode needs a local host).', 400);
+            const audio = await provider.synthesize(text);
+            return new Response(new Uint8Array(audio), { headers: { 'Content-Type': 'audio/mpeg', 'Cache-Control': 'no-store' } });
+          }
           const cfg: Record<string, unknown> = {
             enabled: true,
             provider: body.provider === 'elevenlabs' || body.provider === 'usejarvis' ? body.provider : 'edge',
