@@ -63,6 +63,13 @@ RUN mkdir -p ui/public/openwakeword/models ui/public/ort && \
 # Build the dashboard UI bundle
 RUN bun build ui/index.html --outdir ui/dist
 
+# Fork: prebuild the workflow engine bundle + an empty pieces catalog at IMAGE
+# build time. Without this the daemon runs `bun install` against the npm
+# registry on first boot, which an offline container cannot do. Wired up via
+# workflows.engine_dir / pieces_dir / piece_metadata_cache (docker/offline/config.yaml).
+RUN HOME=/tmp/rt-home bun run scripts/build-shared-runtime.ts --out /app/shared-runtime --pieces 0 && \
+    rm -rf /tmp/rt-home
+
 # ─── Stage 3: Production image ─────────────────────────────────────
 FROM oven/bun:1-slim AS production
 
@@ -83,9 +90,12 @@ COPY --from=build /app/bin ./bin
 COPY --from=build /app/roles ./roles
 COPY --from=build /app/ui/dist ./ui/dist
 COPY --from=build /app/ui/public ./ui/public
+COPY --from=build /app/shared-runtime /opt/jarvis-runtime
 # Copy version-stamped package.json from build stage (not the original)
 COPY --from=build /app/package.json ./
 COPY tsconfig.json ./
+# Fork: the license (sec. 6) must travel with every copy, including images.
+COPY LICENSE MODIFICATIONS.md ./
 
 # Install jarvis as a global command
 # Note: `bun link` can't be used here — it symlinks through /root/.bun/ which

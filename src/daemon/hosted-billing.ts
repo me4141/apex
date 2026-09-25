@@ -1,6 +1,7 @@
 import type { JarvisConfig } from '../config/types.ts';
 import { INSTANCE_SIGNATURE_HEADER, signWithSecret } from '../integrations/google-signature.ts';
 import { redactSecrets } from '../util/redact.ts';
+import { isOfflineMode, warnOfflineBlocked } from '../config/offline.ts';
 
 /**
  * This instance's owner's billing summary, read from the control plane
@@ -119,6 +120,10 @@ function isHttpUrl(value: string, httpsOnly = false): boolean {
 export function readHostedBillingConfig(config: JarvisConfig): HostedBillingConfig | null {
   const block = config.usejarvis_billing;
   if (!block || typeof block !== 'object') return null;
+  if (isOfflineMode()) {
+    warnOfflineBlocked('hosted billing poll', 'usejarvis_billing block ignored');
+    return null;
+  }
   const url = str(block.url);
   const instanceId = str(block.instance_id);
   const secret = str(block.secret);

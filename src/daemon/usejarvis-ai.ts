@@ -1,6 +1,7 @@
 import type { JarvisConfig, LLMConfig, STTConfig, TTSConfig } from '../config/types.ts';
 import type { HostedVoiceCredentials } from '../comms/voice.ts';
 import { loadUserSection, loadUserSectionStrict } from './user-settings.ts';
+import { isOfflineMode, warnOfflineBlocked } from '../config/offline.ts';
 
 /**
  * Hosted "Usejarvis AI" wiring (the platform's LLM proxy).
@@ -71,6 +72,11 @@ function readUsejarvisAiBlock(
 ): { base_url: string; api_key: string } | null {
   const block = config.usejarvis_ai;
   if (!block || typeof block !== 'object') return null;
+  // Fork: offline mode never talks to the hosted proxy, whatever the file says.
+  if (isOfflineMode()) {
+    warnOfflineBlocked('hosted usejarvis_ai proxy', 'config.yaml block ignored');
+    return null;
+  }
   const { base_url, api_key } = block as Record<string, unknown>;
   if (
     (base_url !== undefined && typeof base_url !== 'string')
@@ -122,6 +128,9 @@ export function hasUsejarvisAi(config: JarvisConfig): boolean {
  */
 export function isHostedInstall(config: JarvisConfig): boolean {
   if (hasUsejarvisAi(config)) return true;
+  // Offline mode hides the block from hasUsejarvisAi; this is a deny-gate, so
+  // its mere presence still classifies the install as hosted (fails safe).
+  if (isOfflineMode() && config.usejarvis_ai && typeof config.usejarvis_ai === 'object') return true;
   const listen = config.daemon?.listen;
   return typeof listen === 'string' && listen.trim().startsWith('unix:');
 }

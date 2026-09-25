@@ -1,0 +1,82 @@
+# Offline stack: Jarvis + Ollama with NO internet egress at runtime.
+#
+#   cp .env.example .env               # then set JARVIS_LLM_BASE_URL=http://ollama:11434/v1
+#   docker compose -f docker-compose.offline.yml --profile setup run --rm ollama-pull   # one-time, needs internet
+#   docker compose -f docker-compose.offline.yml up -d --build
+#   open http://127.0.0.1:3142
+#
+# `jarvis` and `ollama` sit only on `isolated`, an internal network with no
+# gateway: even a code path this fork missed has nowhere to go. The dashboard
+# reaches you through `edge`, a TCP relay bound to 127.0.0.1. See docs/OFFLINE.md.
+
+name: jarvis-offline
+
+services:
+  jarvis:
+    build: .
+    env_file: .env
+    environment:
+      JARVIS_OFFLINE: "1"
+      DO_NOT_TRACK: "1"
+    volumes:
+      - jarvis-data:/data
+      - ./docker/offline/config.yaml:/etc/jarvis/config.yaml:ro
+    # The daemon reads ~/.jarvis/config.yaml (home = /data) and writes other
+    # state beside it, so bind-mounting the file there would leave a root-owned
+    # ~/.jarvis. Copy it in as the jarvis user instead.
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - mkdir -p /data/.jarvis && cp /etc/jarvis/config.yaml /data/.jarvis/config.yaml && exec jarvis start --no-open --data-dir /data --no-local-tools
+    networks: [isolated]
+    depends_on: [ollama]
+    restart: unless-stopped
+
+  ollama:
+    image: ollama/ollama:latest
+    volumes:
+      - ollama-models:/root/.ollama
+    networks: [isolated]
+    restart: unless-stopped
+    # GPU (NVIDIA Container Toolkit): uncomment
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices: [{ driver: nvidia, count: all, capabilities: [gpu] }]
+
+  # Relay: the only container with a published port. Docker cannot publish a
+  # port for a container attached solely to an internal network.
+  edge:
+    image: alpine/socat:latest
+    command: TCP-LISTEN:3142,fork,reuseaddr TCP:jarvis:3142
+    ports:
+      - "127.0.0.1:3142:3142"
+    networks: [isolated, egress]
+    depends_on: [jarvis]
+    restart: unless-stopped
+
+  # One-time model download (the ONLY step that needs internet). Shares the
+  # model volume with `ollama`. Override the model: OLLAMA_PULL=llama3.1:8b
+  ollama-pull:
+    profiles: [setup]
+    image: ollama/ollama:latest
+    volumes:
+      - ollama-models:/root/.ollama
+    networks: [egress]
+    environment:
+      OLLAMA_PULL: ${OLLAMA_PULL:-qwen2.5:7b-instruct}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        ollama serve & pid=$$!
+        until ollama list >/dev/null 2>&1; do sleep 1; done
+        ollama pull "$$OLLAMA_PULL"
+        kill $$pid
+
+networks:
+  isolated:
+    internal: true
+  egress: {}
+
+volumes:
+  jarvis-data:
+  ollama-models:

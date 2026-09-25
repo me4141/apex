@@ -27,11 +27,14 @@ describe('buildPayload', () => {
 });
 
 describe('telemetryEndpoint', () => {
-  test('resolves to the configured Supabase collector', () => {
-    const ep = telemetryEndpoint();
-    expect(ep).not.toBeNull();
-    expect(ep?.url).toMatch(/^https:\/\/.+\.supabase\.co\/rest\/v1\/telemetry_pings$/);
-    expect(ep?.key.length).toBeGreaterThan(0);
+  test('has no built-in collector', () => {
+    expect(telemetryEndpoint({})).toBeNull();
+  });
+
+  test('requires both JARVIS_TELEMETRY_URL and JARVIS_TELEMETRY_KEY', () => {
+    expect(telemetryEndpoint({ JARVIS_TELEMETRY_URL: 'http://127.0.0.1:9/p' })).toBeNull();
+    expect(telemetryEndpoint({ JARVIS_TELEMETRY_URL: 'http://127.0.0.1:9/p', JARVIS_TELEMETRY_KEY: 'k' }))
+      .toEqual({ url: 'http://127.0.0.1:9/p', key: 'k' });
   });
 });
 

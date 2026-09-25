@@ -1,13 +1,18 @@
-const TELEMETRY_URL = 'https://wmrxnfhghycxyabdhczn.supabase.co/rest/v1/telemetry_pings';
-const TELEMETRY_ANON_KEY =
-  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6IndtcnhuZmhnaHljeHlhYmRoY3puIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODA5OTQ4OTgsImV4cCI6MjA5NjU3MDg5OH0.phREIq3UEKPUyTNT077q-LWBqCw16wajIoTC50Z0J0E';
+/**
+ * Fork change: upstream hard-coded its Supabase collector URL + anon key here.
+ * Both are removed, so no build of this fork can reach the upstream collector.
+ * A collector of your own can be supplied via env; with neither set there is
+ * no endpoint and every send short-circuits as 'unconfigured'.
+ */
 
 /** 1 hour. Server processes that never restart still emit a heartbeat. */
 export const HEARTBEAT_INTERVAL_MS = 60 * 60 * 1000;
 
-export function telemetryEndpoint(): { url: string; key: string } | null {
-  if (!TELEMETRY_URL || TELEMETRY_URL.includes('YOUR_PROJECT_REF') || !TELEMETRY_ANON_KEY) {
-    return null;
-  }
-  return { url: TELEMETRY_URL, key: TELEMETRY_ANON_KEY };
+export function telemetryEndpoint(
+  env: NodeJS.ProcessEnv = process.env,
+): { url: string; key: string } | null {
+  const url = env.JARVIS_TELEMETRY_URL?.trim() ?? '';
+  const key = env.JARVIS_TELEMETRY_KEY?.trim() ?? '';
+  if (!url || !key) return null;
+  return { url, key };
 }

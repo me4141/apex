@@ -1,4 +1,5 @@
 import type { JarvisConfig } from '../config/types.ts';
+import { isOfflineMode } from '../config/offline.ts';
 
 export type TelemetryDecision = {
   enabled: boolean;
@@ -15,6 +16,10 @@ export function resolveTelemetryEnabled(
   config: Pick<JarvisConfig, 'telemetry'>,
   env: NodeJS.ProcessEnv = process.env,
 ): TelemetryDecision {
+  if (isOfflineMode(env)) {
+    return { enabled: false, reason: 'JARVIS_OFFLINE is set' };
+  }
+
   const dnt = env.DO_NOT_TRACK;
   if (dnt !== undefined && !isFalsy(dnt)) {
     return { enabled: false, reason: 'DO_NOT_TRACK is set' };
@@ -27,9 +32,10 @@ export function resolveTelemetryEnabled(
     return { enabled: true, reason: 'JARVIS_TELEMETRY opt-in' };
   }
 
-  if (config.telemetry?.enabled === false) {
-    return { enabled: false, reason: 'telemetry.enabled=false in config' };
+  if (config.telemetry?.enabled === true) {
+    return { enabled: true, reason: 'telemetry.enabled=true in config' };
   }
 
-  return { enabled: true, reason: 'enabled by default' };
+  // Fork change: opt-IN. Upstream defaulted to on.
+  return { enabled: false, reason: 'telemetry.enabled=false in config (default)' };
 }

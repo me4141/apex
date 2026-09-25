@@ -2,6 +2,7 @@ import type { STTConfig, TTSConfig } from '../config/types.ts';
 import { redactSecrets } from '../util/redact.ts';
 import { hostedProxyError } from '../util/hosted-error.ts';
 import { originHeaders } from '../llm/origin.ts';
+import { isLocalUrl, isOfflineMode, warnOfflineBlocked } from '../config/offline.ts';
 
 export interface STTProvider {
   transcribe(audio: Buffer): Promise<string>;
@@ -377,6 +378,18 @@ export function createSTTProvider(
   config: STTConfig,
   hosted?: HostedVoiceCredentials | null,
 ): STTProvider | null {
+  // Fork: offline mode allows only a local Whisper server on a local host.
+  if (isOfflineMode()) {
+    if (config.provider !== 'local') {
+      warnOfflineBlocked(`STT provider '${config.provider}'`, "use stt.provider 'local' (JARVIS_STT_PROVIDER=local)");
+      return null;
+    }
+    const endpoint = config.local?.endpoint ?? 'http://localhost:8080';
+    if (!isLocalUrl(endpoint)) {
+      warnOfflineBlocked('local STT endpoint', `${endpoint} is not a local host`);
+      return null;
+    }
+  }
   switch (config.provider) {
     case 'usejarvis':
       if (!hosted?.baseUrl || !hosted?.apiKey) return null;
@@ -622,6 +635,51 @@ export class UsejarvisTTS implements TTSProvider {
 }
 
 /**
+ * Local OpenAI-compatible TTS (fork addition): POST {base}/v1/audio/speech.
+ * Served by Kokoro-FastAPI, Speaches, openedai-speech, LocalAI, etc. Asks for
+ * MP3 like every other provider here, so the browser's decodeAudioData path
+ * is unchanged.
+ */
+export class LocalOpenAITTS implements TTSProvider {
+  private readonly url: string;
+
+  constructor(
+    baseUrl: string = 'http://localhost:8880/v1',
+    private readonly model: string = 'kokoro',
+    private readonly voice: string = 'af_heart',
+    private readonly apiKey: string = '',
+  ) {
+    const trimmed = baseUrl.replace(/\/+$/, '');
+    if (/\/audio\/speech$/.test(trimmed)) this.url = trimmed;
+    else if (/\/v1$/.test(trimmed)) this.url = `${trimmed}/audio/speech`;
+    else this.url = `${trimmed}/v1/audio/speech`;
+  }
+
+  async synthesize(text: string): Promise<Buffer> {
+    const input = text.length > MAX_TTS_INPUT_CHARS ? text.slice(0, MAX_TTS_INPUT_CHARS) : text;
+    const response = await fetch(this.url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(this.apiKey ? { Authorization: `Bearer ${this.apiKey}` } : {}),
+      },
+      body: JSON.stringify({ model: this.model, input, voice: this.voice, response_format: 'mp3' }),
+      signal: AbortSignal.timeout(TTS_TIMEOUT_MS),
+    });
+    if (!response.ok) {
+      const err = await response.text();
+      throw new Error(`Local TTS error (${response.status}): ${redactSecrets(err).slice(0, 200)}`);
+    }
+    return Buffer.from(await response.arrayBuffer());
+  }
+
+  async *synthesizeStream(text: string): AsyncIterable<Buffer> {
+    const audio = await this.synthesize(text);
+    if (audio.length > 0) yield audio;
+  }
+}
+
+/**
  * Sarvam AI TTS Provider — high-quality Indian language voices via Sarvam AI.
  */
 export class SarvamTTSProvider implements TTSProvider {
@@ -713,6 +771,25 @@ export function createTTSProvider(
   hosted?: HostedVoiceCredentials | null,
 ): TTSProvider | null {
   if (!config.enabled) return null;
+
+  // Fork: offline mode allows only the local OpenAI-compatible TTS server.
+  // Note the upstream fallthrough below: an unset provider means Edge, which
+  // is Microsoft's cloud, so 'local' must be chosen explicitly.
+  if (isOfflineMode()) {
+    if (config.provider !== 'local') {
+      warnOfflineBlocked(`TTS provider '${config.provider ?? 'edge'}'`, "use tts.provider 'local' (JARVIS_TTS_PROVIDER=local)");
+      return null;
+    }
+    const baseUrl = config.local?.base_url ?? 'http://localhost:8880/v1';
+    if (!isLocalUrl(baseUrl)) {
+      warnOfflineBlocked('local TTS endpoint', `${baseUrl} is not a local host`);
+      return null;
+    }
+  }
+
+  if (config.provider === 'local') {
+    return new LocalOpenAITTS(config.local?.base_url, config.local?.model, config.local?.voice, config.local?.api_key);
+  }
 
   if (config.provider === 'usejarvis') {
     if (!hosted?.baseUrl || !hosted?.apiKey) return null;
