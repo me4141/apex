@@ -1,5 +1,8 @@
 @import "tailwindcss";
 @import "./tokens.css";
+@import "@fontsource-variable/space-grotesk";
+@import "@fontsource-variable/manrope";
+@import "@fontsource-variable/jetbrains-mono";
 
 :root {
   /* Legacy IDE (Workspaces §02) status hues — the last of the old --j-* graft.
